@@ -14,11 +14,10 @@ from engine import Camera, Mesh, prepare_frame
 
 ROOT = Path(__file__).resolve().parent
 SIZE = (1180, 780)
-BACKGROUND = (247, 246, 242)
-TEXT = (47, 52, 53)
-MUTED = (117, 121, 118)
-BORDER = (216, 216, 209)
-ACCENT = (48, 94, 117)
+BACKGROUND = (0, 0, 0)
+TEXT = (224, 224, 224)
+MUTED = (135, 135, 135)
+BORDER = (36, 36, 36)
 MODES = ('Shaded', 'Edges', 'Wireframe')
 
 
@@ -116,7 +115,7 @@ class Viewer:
     def button(self, name, label):
         rect = self.buttons[name]
         if rect.collidepoint(pygame.mouse.get_pos()):
-            pygame.draw.rect(self.surface, (235, 235, 229), rect, border_radius=4)
+            pygame.draw.rect(self.surface, (24, 24, 24), rect, border_radius=4)
         while self.font.size(label)[0] > rect.width - 12 and len(label) > 4:
             label = label[:-4] + '...'
         rendered = self.font.render(label, True, TEXT)
