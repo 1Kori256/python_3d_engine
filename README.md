@@ -1,7 +1,7 @@
 # Python 3D engine
 
-A software renderer for OBJ meshes, with smooth lighting and a per-pixel depth
-buffer. Drag to orbit and scroll to zoom.
+A software renderer for OBJ meshes, with flat shading and a per-pixel depth buffer.
+Drag to orbit and scroll to zoom. Smooth shading is available as an option.
 
 ![Mesh viewer](docs/preview.png)
 
@@ -21,12 +21,17 @@ Open another mesh with `python main.py --model objects/cube.obj`. Paths passed t
 `--model` are relative to your working directory; the default mesh is found
 relative to the application. `main2.py` opens the same viewer.
 
+The default model is a 16,000-triangle flight helmet from Khronos's sample assets,
+converted to OBJ and simplified for this viewer. It is released under CC0;
+[source, credits, and conversion details](objects/ATTRIBUTION.md) are included.
+Press **M** to cycle through the original models.
+
 | Control | Action |
 | --- | --- |
 | Drag | Orbit the camera |
 | Scroll | Zoom |
 | Space / Pause | Pause rotation |
-| W / Display button | Smooth, flat, edges, or wireframe |
+| W / Display button | Flat, smooth, edges, or wireframe |
 | M / Filename button | Next bundled mesh |
 | R / Reset | Fit the model and reset the camera |
 | Q / Quality button | Standard or High antialiasing |

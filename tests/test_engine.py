@@ -137,6 +137,12 @@ class FrameTests(unittest.TestCase):
         back = prepare_frame(mesh, Camera(yaw=np.pi, pitch=0), 800, 600)
         self.assertAlmostEqual(float(front.colors.mean()), float(back.colors.mean()), places=8)
 
+    def test_flat_shading_has_one_color_per_face(self):
+        mesh = Mesh.from_obj(ROOT / 'objects/pokus3.obj')
+        frame = prepare_frame(mesh, Camera(), 800, 600, smooth=False)
+        np.testing.assert_array_equal(frame.colors[:, 0], frame.colors[:, 1])
+        np.testing.assert_array_equal(frame.colors[:, 1], frame.colors[:, 2])
+
     def test_corner_normals_keep_cube_creases(self):
         mesh = Mesh.from_obj(ROOT / 'objects/cube.obj')
         for face, corners in zip(mesh.face_normals, mesh.corner_normals):

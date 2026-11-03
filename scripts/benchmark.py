@@ -34,7 +34,7 @@ def main():
     results = {}
     try:
         app = Viewer(pygame.Surface(SIZE), quality=2 if args.quality == 'high' else 1)
-        for name in ('pokus3.obj', 'sphere.obj'):
+        for name in ('flight_helmet.obj', 'pokus3.obj', 'sphere.obj'):
             app.mesh = Mesh.from_obj(ROOT / 'objects' / name)
             app.reset()
             samples = []

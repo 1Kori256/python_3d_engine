@@ -216,9 +216,10 @@ def prepare_frame(mesh, camera, width, height, angle=0, cull=True, smooth=True):
         valid &= np.einsum('ij,ij->i', face_normals, viewed[:, 0]) < 0
     if smooth:
         normals = mesh.corner_normals @ rotation.T @ basis
+        colors = illuminate(normals[valid], viewed[valid])
     else:
-        normals = np.repeat(face_normals[:, None, :], 3, axis=1)
-    colors = illuminate(normals[valid], viewed[valid])
+        colors = illuminate(face_normals[valid], viewed[valid].mean(axis=1))
+        colors = np.repeat(colors[:, None, :], 3, axis=1)
     viewed = viewed[valid]
     distances = viewed @ planes[:, :3].T + planes[:, 3]
     outside = np.any(np.all(distances < 0, axis=1), axis=1)

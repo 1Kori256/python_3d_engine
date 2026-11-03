@@ -68,6 +68,7 @@ class ViewerTests(unittest.TestCase):
             self.assertEqual(draw.call_count, 2)
 
     def test_toolbar_mode_pause_model_and_reset(self):
+        self.assertEqual(MODES[self.viewer.mode], 'Flat')
         def click(name):
             self.viewer.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
                                                       pos=self.viewer.buttons[name].center, button=1))

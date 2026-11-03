@@ -19,11 +19,12 @@ BACKGROUND = (0, 0, 0)
 TEXT = (224, 224, 224)
 MUTED = (135, 135, 135)
 BORDER = (36, 36, 36)
-MODES = ('Smooth', 'Flat', 'Edges', 'Wireframe')
+MODES = ('Flat', 'Smooth', 'Edges', 'Wireframe')
+DEFAULT_MODEL = ROOT / 'objects/flight_helmet.obj'
 
 
 class Viewer:
-    def __init__(self, surface, model=ROOT / 'objects/pokus3.obj', quality=1):
+    def __init__(self, surface, model=DEFAULT_MODEL, quality=1):
         self.font = pygame.font.SysFont('helveticaneue,arial,liberationsans', 18)
         self.small = pygame.font.SysFont('helveticaneue,arial,liberationsans', 15)
         self.title = pygame.font.SysFont('georgia,dejavuserif', 31)
@@ -155,7 +156,7 @@ class Viewer:
                self.camera.distance, self.mode)
         if key != self.scene_key:
             frame = prepare_frame(self.mesh, self.camera, *self.scene.get_size(),
-                                  angle=self.angle, cull=self.mode != 3, smooth=self.mode != 1)
+                                  angle=self.angle, cull=self.mode != 3, smooth=self.mode != 0)
             if self.mode == 3:
                 self.pixels.fill(0)
                 self.depth.fill(0)
@@ -209,7 +210,7 @@ class Viewer:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--model', type=Path, default=ROOT / 'objects/pokus3.obj', help='OBJ file to open')
+    parser.add_argument('--model', type=Path, default=DEFAULT_MODEL, help='OBJ file to open')
     parser.add_argument('--screenshot', type=Path, help='Render a PNG without opening a window')
     parser.add_argument('--quality', choices=('standard', 'high'), default='standard')
     args = parser.parse_args(argv)
