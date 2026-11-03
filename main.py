@@ -1,177 +1,256 @@
-from imported_libs import *
+"""Inspect OBJ meshes with a small software renderer."""
 
-pygame.init()
-pygame.display.set_caption('3D Engine')
-#screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-#w, h = screen.get_size()
-screen = pygame.display.set_mode((500, 500))
-w, h = 500, 500
-cx, cy = int(w / 2), int(h / 2)
-clock = pygame.time.Clock()
-fov = 90
+import argparse
+import math
+import os
+from pathlib import Path
 
-verts = []
-faces = []
+os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 
-filepath = 'objects/pokus3.obj'
-with open(filepath) as fp:
-    line = fp.readline()
-    cnt = 1
-    while line:
-        a = line.strip().split(" ")
+import numpy as np
+import pygame
 
-        if a[0] == "v":
-            v = [float(a[1]), float(a[2]), float(a[3])]
-            verts.append(v)
+from engine import Camera, Mesh, prepare_frame
+from rasterizer import antialias_edges, draw_edges, rasterize
 
-        elif a[0] == "f":
-            f = [float(a[1]), float(a[2]), float(a[3])]
-            faces.append(f)
-
-        line = fp.readline()
-        cnt += 1
-
-class Shape():
-
-    def __init__(self):
-        t = np.zeros((len(faces), 3, 4))
-        for i in range(len(faces)):
-            v1 = verts[int(faces[i][0] - 1)] + [1]
-            v2 = verts[int(faces[i][1] - 1)] + [1]
-            v3 = verts[int(faces[i][2] - 1)] + [1]
-            t[i][0] = v1
-            t[i][1] = v2
-            t[i][2] = v3
-        self.triangles = t
+ROOT = Path(__file__).resolve().parent
+SIZE = (1180, 780)
+BACKGROUND = (0, 0, 0)
+TEXT = (224, 224, 224)
+MUTED = (135, 135, 135)
+BORDER = (36, 36, 36)
+MODES = ('Flat', 'Smooth', 'Edges', 'Wireframe')
+DEFAULT_MODEL = ROOT / 'objects/flight_helmet.obj'
 
 
-class Camera():
+class Viewer:
+    def __init__(self, surface, model=DEFAULT_MODEL, quality=1):
+        self.font = pygame.font.SysFont('helveticaneue,arial,liberationsans', 18)
+        self.small = pygame.font.SysFont('helveticaneue,arial,liberationsans', 15)
+        self.title = pygame.font.SysFont('georgia,dejavuserif', 31)
+        self.models = list(dict.fromkeys([Path(model).resolve(),
+                                         *sorted((ROOT / 'objects').glob('*.obj'))]))
+        self.quality = quality
+        self.model_index = 0
+        self.mesh = Mesh.from_obj(self.models[0])
+        self.camera = Camera()
+        self.angle = 0.0
+        self.paused = False
+        self.dragging = False
+        self.mode = 0
+        self.fps = 0.0
+        self.message = 'Drag to orbit. Scroll to zoom.'
+        self.resize(surface)
+        self.reset()
 
-    def __init__(self):
-        self.pos = np.array([0, 0, 0])
-        self.dir = np.array([0, 0, 1])
-        self.yaw = 0
+    def resize(self, surface):
+        self.surface = surface
+        width, height = surface.get_size()
+        self.viewport = pygame.Rect(32, 88, width - 64, height - 226)
+        size = (self.viewport.width * self.quality, self.viewport.height * self.quality)
+        self.pixels = np.zeros((size[1], size[0], 3), dtype=np.uint8)
+        self.depth = np.zeros(self.pixels.shape[:2], dtype=np.float32)
+        self.filtered = np.empty_like(self.pixels)
+        # SDL reads the reusable RGB arrays directly, without a per-frame upload copy.
+        self.scene = pygame.image.frombuffer(self.pixels, size, 'RGB')
+        self.filtered_scene = pygame.image.frombuffer(self.filtered, size, 'RGB')
+        self.preview = pygame.Surface(self.viewport.size) if self.quality == 2 else self.scene
+        self.scene_key = None
+        self.cached_frame = None
+        self.buttons = {
+            'model': pygame.Rect(width - 310, 26, 180, 34),
+            'reset': pygame.Rect(width - 110, 26, 78, 34),
+            'pause': pygame.Rect(40, height - 93, 86, 36),
+            'mode': pygame.Rect(180, height - 93, 120, 36),
+            'quality': pygame.Rect(width - (450 if width >= 1100 else 180), height - 93, 120, 36),
+        }
 
-    def update(self, key, dt):
+    def reset(self):
+        self.camera = Camera()
+        radius = float(np.linalg.norm(self.mesh.vertices, axis=1).max())
+        self.camera.distance = radius / math.sin(math.radians(25)) * 1.12
+        self.angle = math.pi
+        self.dragging = False
 
-        forward = np.dot(camera.dir, 8*dt)
-        if key[pygame.K_w]:
-            self.pos = np.add(self.pos, forward)
+    def toggle_quality(self):
+        self.quality = 2 if self.quality == 1 else 1
+        self.resize(self.surface)
 
-        if key[pygame.K_s]:
-            self.pos = np.subtract(self.pos, forward)
+    def next_model(self):
+        index = (self.model_index + 1) % len(self.models)
+        try:
+            mesh = Mesh.from_obj(self.models[index])
+        except (OSError, ValueError) as error:
+            self.message = str(error)
+            return
+        self.model_index, self.mesh = index, mesh
+        self.message = 'Drag to orbit. Scroll to zoom.'
+        self.reset()
 
-        if key[pygame.K_a]:
-            self.yaw -= 2*dt
-
-        if key[pygame.K_d]:
-            self.yaw += 2*dt
-
-
-camera = Camera()
-shape = Shape()
-
-z1 = 0.1
-z2 = 1000
-r = h / w
-f = 1 / tan(radians(fov / 2))
-
-projection = np.array([[r * f, 0, 0, 0],
-                       [0, f, 0, 0],
-                       [0, 0, z2 / (z2 - z1), 1],
-                       [0, 0, (-z1 * z2) / (z2 - z1), 0]])
-
-theta = 0
-running = True
-while running:
-
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT: pygame.quit(); sys.exit(); running = False
+    def handle_event(self, event):
+        if event.type == pygame.QUIT:
+            return False
         if event.type == pygame.KEYDOWN:
-            global_key = pygame.key.get_pressed()
-            if global_key[pygame.K_ESCAPE]:
-                running = False
-                pygame.quit()
-                sys.exit()
+            if event.key == pygame.K_ESCAPE:
+                return False
+            if event.key == pygame.K_SPACE:
+                self.paused = not self.paused
+            elif event.key == pygame.K_w:
+                self.mode = (self.mode + 1) % len(MODES)
+            elif event.key == pygame.K_m:
+                self.next_model()
+            elif event.key == pygame.K_r:
+                self.reset()
+            elif event.key == pygame.K_q:
+                self.toggle_quality()
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.buttons['pause'].collidepoint(event.pos):
+                self.paused = not self.paused
+            elif self.buttons['mode'].collidepoint(event.pos):
+                self.mode = (self.mode + 1) % len(MODES)
+            elif self.buttons['quality'].collidepoint(event.pos):
+                self.toggle_quality()
+            elif self.buttons['model'].collidepoint(event.pos):
+                self.next_model()
+            elif self.buttons['reset'].collidepoint(event.pos):
+                self.reset()
+            elif self.viewport.collidepoint(event.pos):
+                self.dragging = True
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            self.dragging = False
+        elif event.type == pygame.MOUSEMOTION and self.dragging:
+            self.camera.orbit(*event.rel)
+        elif event.type == pygame.MOUSEWHEEL:
+            self.camera.zoom(event.y)
+        elif event.type == pygame.WINDOWFOCUSLOST:
+            self.dragging = False
+        return True
 
-    screen.fill((0, 0, 0))
+    def update(self, seconds):
+        if not self.paused and not self.dragging:
+            self.angle = (self.angle + seconds * 0.35) % math.tau
 
-    rotation_Z = rotate_Z(theta)
-    rotation_X = rotate_X(0)
-    rotation_Y = rotate_Y(3/2*pi + theta)
+    def text(self, value, position, color=TEXT, font=None):
+        self.surface.blit((font or self.font).render(value, True, color), position)
 
-    theta += 0.02
+    def button(self, name, label):
+        rect = self.buttons[name]
+        if rect.collidepoint(pygame.mouse.get_pos()):
+            pygame.draw.rect(self.surface, (24, 24, 24), rect, border_radius=4)
+        while self.font.size(label)[0] > rect.width - 12 and len(label) > 4:
+            label = label[:-4] + '...'
+        rendered = self.font.render(label, True, TEXT)
+        self.surface.blit(rendered, rendered.get_rect(center=rect.center))
 
-    dt = clock.tick() / 1000
-    key = pygame.key.get_pressed()
-    camera.update(key, dt)
+    def draw_axes(self):
+        center = np.array([self.viewport.right - 45, self.viewport.bottom - 40])
+        basis = self.camera.basis()
+        colors = ((157, 99, 91), (99, 133, 105), (95, 123, 157))
+        for label, direction, color in zip('XYZ', np.eye(3) @ basis, colors):
+            end = center + direction[:2] * [28, -28]
+            pygame.draw.aaline(self.surface, color, center, end)
+            self.text(label, tuple(end + [4, -8]), color, self.small)
 
-    Up = np.array([0, 1, 0])
-    FW = np.array([0,0,1])
-    camera_rotation = rotate_Y_3(camera.yaw)
-    camera.dir = np.dot(camera_rotation, FW)
-    FW = np.add(camera.pos, camera.dir)
+    def draw_scene(self):
+        key = (id(self.mesh), self.angle, self.camera.yaw, self.camera.pitch,
+               self.camera.distance, self.mode)
+        if key != self.scene_key:
+            frame = prepare_frame(self.mesh, self.camera, *self.scene.get_size(),
+                                  angle=self.angle, cull=self.mode != 3, smooth=self.mode != 0)
+            if self.mode == 3:
+                self.pixels.fill(0)
+                self.depth.fill(0)
+                draw_edges(frame.points, frame.inverse_depths, self.pixels, self.depth, hidden=False)
+            else:
+                rasterize(frame.points, frame.inverse_depths, frame.colors, self.pixels, self.depth)
+                if self.mode == 2:
+                    draw_edges(frame.points, frame.inverse_depths, self.pixels, self.depth)
+            if self.quality == 1:
+                if self.mode != 3 and len(frame.points):
+                    low = np.floor(frame.points.min(axis=(0, 1))).astype(int) - 1
+                    high = np.ceil(frame.points.max(axis=(0, 1))).astype(int) + 1
+                    bounds = (int(low[0]), int(low[1]), int(high[0]), int(high[1]))
+                    antialias_edges(self.pixels, self.depth, self.filtered, bounds)
+                    self.preview = self.filtered_scene
+                else:
+                    self.preview = self.scene
+            else:
+                pygame.transform.smoothscale(self.scene, self.viewport.size, self.preview)
+            self.cached_frame = frame
+            self.scene_key = key
+        self.surface.blit(self.preview, self.viewport)
+        return self.cached_frame
 
-    camera_matrix = matrix_pointat(camera.pos, FW, Up)
-    #view_matrix = matrix_inverse(camera_matrix)
-    view_matrix = np.linalg.inv(camera_matrix)
+    def render(self):
+        width, height = self.surface.get_size()
+        self.surface.fill(BACKGROUND)
+        frame = self.draw_scene()
+        self.draw_axes()
+        self.text('3D engine', (40, 24), TEXT, self.title)
+        hint = self.small.render(self.message, True, MUTED)
+        self.surface.blit(hint, hint.get_rect(center=(width // 2, 43)))
+        self.button('model', self.mesh.name + '  >')
+        self.button('reset', 'Reset')
+        pygame.draw.line(self.surface, BORDER, (40, height - 120), (width - 40, height - 120))
+        self.button('pause', 'Play' if self.paused else 'Pause')
+        self.button('mode', MODES[self.mode])
+        self.button('quality', 'High' if self.quality == 2 else 'Standard')
+        self.text(f'{len(self.mesh.vertices)} vertices   /   {len(self.mesh.faces)} triangles',
+                  (356, height - 87), MUTED)
+        status = f'{self.fps:.0f} fps' if self.fps else 'Software renderer'
+        if width >= 1100:
+            rendered = self.small.render(status, True, MUTED)
+            self.surface.blit(rendered, (width - 40 - rendered.get_width(), height - 83))
+        shortcuts = ('Space  pause     /     W  display     /     M  model     /     R  reset     /     Q  quality'
+                     if width >= 1100 else 'Space  pause    /    W  display    /    M  model    /    Q  quality')
+        self.text(shortcuts, (40, height - 34), MUTED, self.small)
+        self.text('Esc  quit', (width - 94, height - 34), MUTED, self.small)
+        return frame
 
-    depth_list = []
 
-    for triangle in shape.triangles:
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--model', type=Path, default=DEFAULT_MODEL, help='OBJ file to open')
+    parser.add_argument('--screenshot', type=Path, help='Render a PNG without opening a window')
+    parser.add_argument('--quality', choices=('standard', 'high'), default='standard')
+    args = parser.parse_args(argv)
+    if args.screenshot:
+        os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+    pygame.display.init()
+    pygame.font.init()
+    try:
+        surface = (pygame.Surface(SIZE) if args.screenshot
+                   else pygame.display.set_mode(SIZE, pygame.RESIZABLE))
+        pygame.display.set_caption('Python 3D engine')
+        try:
+            app = Viewer(surface, args.model, quality=2 if args.quality == 'high' else 1)
+        except (OSError, ValueError) as error:
+            parser.exit(1, f'{parser.prog}: {error}\n')
+        if args.screenshot:
+            app.render()
+            args.screenshot.parent.mkdir(parents=True, exist_ok=True)
+            pygame.image.save(surface, str(args.screenshot))
+            return
+        clock = pygame.time.Clock()
+        running = True
+        while running:
+            seconds = min(clock.tick(60) / 1000, 0.1)
+            for event in pygame.event.get():
+                if event.type == pygame.VIDEORESIZE:
+                    surface = pygame.display.set_mode((max(850, event.w), max(600, event.h)),
+                                                      pygame.RESIZABLE)
+                    app.resize(surface)
+                elif not app.handle_event(event):
+                    running = False
+                    break
+            if running:
+                app.update(seconds)
+                app.fps = clock.get_fps()
+                app.render()
+                pygame.display.flip()
+    finally:
+        pygame.quit()
 
-        triangle_translated = np.zeros((3,4))
 
-        for i in range(3):
-            triangle_translated[i] = np.dot(np.dot(triangle[i], rotation_Y), rotation_X)
-            triangle_translated[i, 2] = np.add(triangle_translated[i, 2], 6)
-
-        vector_1 = create_vector(triangle_translated[1], triangle_translated[0])
-        vector_2 = create_vector(triangle_translated[2], triangle_translated[0])
-
-        normal = np.cross(vector_1, vector_2)
-        normal = normalize(normal)
-
-        camera_ray = create_vector(triangle_translated[0], camera.pos)
-
-        if np.dot(normal, camera_ray) < 0:
-            light = [0, 0, -1]
-            light = normalize(light)
-            dot_product = np.dot(light, normal)
-            a = mapX(max(dot_product, 0.1), 0, 1, 0, 255)
-
-            triangle_viewed = np.zeros((3, 4))
-            triangle_viewed[0] = np.dot(view_matrix, triangle_translated[0])
-            triangle_viewed[1] = np.dot(view_matrix, triangle_translated[1])
-            triangle_viewed[2] = np.dot(view_matrix, triangle_translated[2])
-
-            triangle_projected = np.zeros((3, 3))
-            for i in range(3):
-                triangle_p = multiply_normalize(triangle_viewed[i], projection)
-                triangle_projected[i] = triangle_p
-
-            for i in range(3):
-                triangle_projected[i, 0] *= -1
-                triangle_projected[i, 1] *= -1
-
-            x, y = [], []
-            for i in range(3):
-                triangle_projected[i, 0] += 1#np.add(triangle_projected[i, 0], 1)
-                triangle_projected[i, 1] += 1#np.add(triangle_projected[i, 1], 1)
-                triangle_projected[i, 0] *= 0.5 * w
-                triangle_projected[i, 1] *= 0.5 * h
-                x.append(triangle_projected[i, 0])
-                y.append(triangle_projected[i, 1])
-
-            z = (triangle_translated[0][2] + triangle_translated[1][2] + triangle_translated[2][2]) / 3
-            depth_list.append([z, [x[0], y[0]], [x[1], y[1]], [x[2], y[2]], a])
-
-        depth_list = sorted(depth_list, reverse=1)
-
-        for i in range(len(depth_list)):
-            pygame.draw.polygon(screen, (depth_list[i][4], depth_list[i][4], depth_list[i][4]),
-                                ((depth_list[i][1][0], depth_list[i][1][1]),
-                                 (depth_list[i][2][0], depth_list[i][2][1]),
-                                 (depth_list[i][3][0], depth_list[i][3][1])), 0)
-
-    pygame.display.flip()
+if __name__ == '__main__':
+    main()
