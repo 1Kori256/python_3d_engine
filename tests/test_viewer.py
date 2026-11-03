@@ -13,7 +13,8 @@ os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 import numpy as np
 import pygame
 
-from main import ROOT, SIZE, Viewer, main
+from main import MODES, ROOT, SIZE, Viewer, main
+from rasterizer import rasterize
 
 
 class ViewerTests(unittest.TestCase):
@@ -29,11 +30,12 @@ class ViewerTests(unittest.TestCase):
         return self.viewer.handle_event(pygame.event.Event(pygame.KEYDOWN, key=key))
 
     def test_elapsed_time_pause_and_drag_control_animation(self):
+        initial = self.viewer.angle
         self.viewer.update(1)
-        self.assertAlmostEqual(self.viewer.angle, 0.35)
+        self.assertAlmostEqual(self.viewer.angle, initial + 0.35)
         self.key(pygame.K_SPACE)
         self.viewer.update(1)
-        self.assertAlmostEqual(self.viewer.angle, 0.35)
+        self.assertAlmostEqual(self.viewer.angle, initial + 0.35)
         self.key(pygame.K_SPACE)
         self.viewer.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
                                                   pos=(300, 300), button=1))
@@ -41,13 +43,13 @@ class ViewerTests(unittest.TestCase):
         self.viewer.handle_event(pygame.event.Event(pygame.MOUSEMOTION, rel=(30, 10)))
         self.assertFalse(np.allclose(before, self.viewer.camera.position))
         self.viewer.update(1)
-        self.assertAlmostEqual(self.viewer.angle, 0.35)
+        self.assertAlmostEqual(self.viewer.angle, initial + 0.35)
         self.viewer.handle_event(pygame.event.Event(pygame.WINDOWFOCUSLOST))
         self.assertFalse(self.viewer.dragging)
 
     def test_every_mesh_and_display_mode_renders(self):
         for _ in self.viewer.models:
-            for mode in range(3):
+            for mode in range(len(MODES)):
                 with self.subTest(mesh=self.viewer.mesh.name, mode=mode):
                     self.viewer.mode = mode
                     frame = self.viewer.render()
@@ -55,11 +57,15 @@ class ViewerTests(unittest.TestCase):
                     self.assertGreater(len(frame.points), 0)
             self.viewer.next_model()
 
-    def test_render_draws_each_triangle_once(self):
-        with patch('pygame.draw.polygon', wraps=pygame.draw.polygon) as draw:
-            frame = self.viewer.render()
-        self.assertEqual(draw.call_count, len(frame.points))
-        self.assertGreater(draw.call_count, 0)
+    def test_stationary_scene_is_cached_and_orbit_invalidates_it(self):
+        with patch('main.rasterize', wraps=rasterize) as draw:
+            first = self.viewer.render()
+            second = self.viewer.render()
+            self.assertIs(first, second)
+            self.assertEqual(draw.call_count, 1)
+            self.viewer.camera.orbit(5, 0)
+            self.viewer.render()
+            self.assertEqual(draw.call_count, 2)
 
     def test_toolbar_mode_pause_model_and_reset(self):
         def click(name):
@@ -77,14 +83,25 @@ class ViewerTests(unittest.TestCase):
         self.viewer.camera.orbit(40, 30)
         click('reset')
         self.assertAlmostEqual(self.viewer.camera.yaw, 0.6)
-        self.assertEqual(self.viewer.angle, 0)
+        self.assertAlmostEqual(self.viewer.angle, np.pi)
         self.assertFalse(self.key(pygame.K_ESCAPE))
 
     def test_resize_rebuilds_viewport_and_surface(self):
         self.viewer.resize(pygame.Surface((850, 600)))
         frame = self.viewer.render()
-        self.assertEqual(self.viewer.scene.get_width(), self.viewer.viewport.width * 2)
+        self.assertEqual(self.viewer.scene.get_width(), self.viewer.viewport.width * self.viewer.quality)
         self.assertGreater(len(frame.points), 0)
+
+    def test_quality_change_rebuilds_buffers_and_renders(self):
+        self.viewer.render()
+        self.key(pygame.K_q)
+        self.assertEqual(self.viewer.quality, 2)
+        self.assertEqual(self.viewer.depth.shape,
+                         (self.viewer.viewport.height * 2, self.viewer.viewport.width * 2))
+        self.viewer.render()
+        self.key(pygame.K_q)
+        self.assertEqual(self.viewer.quality, 1)
+        self.viewer.render()
 
     def test_screenshot_cli_works_from_another_directory(self):
         with tempfile.TemporaryDirectory() as directory:

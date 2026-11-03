@@ -1,6 +1,7 @@
 """A small CPU rendering pipeline: OBJ loading, camera, clipping, and projection."""
 
 from dataclasses import dataclass
+from functools import cached_property
 import math
 from pathlib import Path
 
@@ -56,6 +57,37 @@ class Mesh:
                 raise ValueError(f'{path.name}: mesh has zero extent')
             vertices = (vertices - (low + high) / 2) * (2.8 / extent)
         return cls(vertices, np.asarray(faces, dtype=int), path.name)
+
+
+    @cached_property
+    def face_vectors(self):
+        triangles = self.vertices[self.faces]
+        return np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+
+    @cached_property
+    def face_normals(self):
+        lengths = np.linalg.norm(self.face_vectors, axis=1, keepdims=True)
+        return np.divide(self.face_vectors, lengths, out=np.zeros_like(self.face_vectors),
+                         where=lengths > 1e-12)
+
+    @cached_property
+    def corner_normals(self):
+        """Area-weighted smooth normals, preserving creases over 65 degrees."""
+        adjacent = [[] for _ in self.vertices]
+        for index, face in enumerate(self.faces):
+            for vertex in face:
+                adjacent[vertex].append(index)
+        result = np.zeros((len(self.faces), 3, 3))
+        threshold = math.cos(math.radians(65))
+        for index, face in enumerate(self.faces):
+            for corner, vertex in enumerate(face):
+                neighbors = np.array(adjacent[vertex])
+                aligned = self.face_normals[neighbors] @ self.face_normals[index] >= threshold
+                normal = self.face_vectors[neighbors[aligned]].sum(axis=0)
+                length = np.linalg.norm(normal)
+                if length > 1e-12:
+                    result[index, corner] = normal / length
+        return result
 
 
 def rotation_y(angle):
@@ -114,15 +146,17 @@ def frustum_planes(width, height, fov=50, near=0.1, far=100):
 
 def clip_polygon(polygon, planes):
     """Sutherland-Hodgman clipping in view space, before perspective division."""
-    polygon = list(np.asarray(polygon, dtype=float))
+    polygon = np.asarray(polygon, dtype=float)
+    columns = polygon.shape[1]
+    polygon = list(polygon)
     for plane in planes:
         if not polygon:
             break
         output = []
         previous = polygon[-1]
-        previous_distance = float(previous @ plane[:3] + plane[3])
+        previous_distance = float(previous[:3] @ plane[:3] + plane[3])
         for current in polygon:
-            distance = float(current @ plane[:3] + plane[3])
+            distance = float(current[:3] @ plane[:3] + plane[3])
             if (distance >= 0) != (previous_distance >= 0):
                 t = previous_distance / (previous_distance - distance)
                 output.append(previous + t * (current - previous))
@@ -130,7 +164,7 @@ def clip_polygon(polygon, planes):
                 output.append(current)
             previous, previous_distance = current, distance
         polygon = output
-    return np.asarray(polygon, dtype=float).reshape(-1, 3)
+    return np.asarray(polygon, dtype=float).reshape(-1, columns)
 
 
 def project(points, width, height, fov=50):
@@ -149,38 +183,59 @@ class Frame:
     points: np.ndarray
     shades: np.ndarray
     depths: np.ndarray
+    inverse_depths: np.ndarray
+    colors: np.ndarray
 
 
-def prepare_frame(mesh, camera, width, height, angle=0, cull=True):
-    """Transform vertices in batches and sort visible triangles once per frame."""
+def illuminate(normals, positions):
+    """Camera-space key and fill lights, plus a restrained specular highlight."""
+    key = np.array([-0.65, 0.75, -0.65])
+    key /= np.linalg.norm(key)
+    fill = np.array([0.7, 0.15, -1.0])
+    fill /= np.linalg.norm(fill)
+    diffuse = (0.09 + 0.78 * np.clip(normals @ key, 0, 1)
+               + 0.13 * np.clip(normals @ fill, 0, 1))
+    view = -positions / np.maximum(np.linalg.norm(positions, axis=-1, keepdims=True), 1e-12)
+    halfway = view + key
+    halfway /= np.maximum(np.linalg.norm(halfway, axis=-1, keepdims=True), 1e-12)
+    specular = np.clip(np.sum(normals * halfway, axis=-1), 0, 1) ** 32 * 0.12
+    linear = diffuse[..., None] * [0.58, 0.65, 0.7] + specular[..., None]
+    return np.sqrt(np.clip(linear, 0, 1)) * 255
+
+
+def prepare_frame(mesh, camera, width, height, angle=0, cull=True, smooth=True):
+    """Transform and clip triangles; visibility is resolved per pixel during drawing."""
     planes = frustum_planes(width, height)
-    world = mesh.vertices @ rotation_y(angle).T
-    triangles = world[mesh.faces]
-    normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
-    lengths = np.linalg.norm(normals, axis=1)
-    valid = lengths > 1e-12
+    rotation = rotation_y(angle)
+    world = mesh.vertices @ rotation.T
+    basis = camera.basis()
+    viewed = ((world - camera.position) @ basis)[mesh.faces]
+    face_normals = mesh.face_normals @ rotation.T @ basis
+    valid = np.linalg.norm(mesh.face_vectors, axis=1) > 1e-12
     if cull:
-        valid &= np.einsum('ij,ij->i', normals, triangles[:, 0] - camera.position) < 0
-    normals = normals[valid] / lengths[valid, None]
-    light = np.array([-0.4, 0.8, -0.6])
-    light /= np.linalg.norm(light)
-    shades = 0.24 + 0.76 * np.clip(normals @ light, 0, 1)
-    viewed = camera.world_to_view(world)[mesh.faces[valid]]
+        valid &= np.einsum('ij,ij->i', face_normals, viewed[:, 0]) < 0
+    if smooth:
+        normals = mesh.corner_normals @ rotation.T @ basis
+    else:
+        normals = np.repeat(face_normals[:, None, :], 3, axis=1)
+    colors = illuminate(normals[valid], viewed[valid])
+    viewed = viewed[valid]
     distances = viewed @ planes[:, :3].T + planes[:, 3]
     outside = np.any(np.all(distances < 0, axis=1), axis=1)
-    viewed, shades, distances = viewed[~outside], shades[~outside], distances[~outside]
+    viewed, colors, distances = viewed[~outside], colors[~outside], distances[~outside]
     inside = np.all(distances >= 0, axis=(1, 2))
     parts = [viewed[inside]]
-    part_shades = [shades[inside]]
-    for triangle, shade in zip(viewed[~inside], shades[~inside]):
-        polygon = clip_polygon(triangle, planes)
+    part_colors = [colors[inside]]
+    for triangle, color in zip(viewed[~inside], colors[~inside]):
+        polygon = clip_polygon(np.concatenate((triangle, color), axis=1), planes)
         if len(polygon) >= 3:
             clipped = np.array([[polygon[0], polygon[i], polygon[i + 1]]
                                 for i in range(1, len(polygon) - 1)])
-            parts.append(clipped)
-            part_shades.append(np.full(len(clipped), shade))
+            parts.append(clipped[:, :, :3])
+            part_colors.append(clipped[:, :, 3:])
     triangles = np.concatenate(parts)
-    shades = np.concatenate(part_shades)
+    colors = np.concatenate(part_colors)
     depths = triangles[:, :, 2].mean(axis=1)
-    order = np.argsort(-depths, kind='stable')
-    return Frame(project(triangles[order], width, height), shades[order], depths[order])
+    shades = colors.mean(axis=(1, 2)) / 255
+    return Frame(project(triangles, width, height), shades, depths,
+                 1 / triangles[:, :, 2], colors)

@@ -116,20 +116,38 @@ class ProjectionTests(unittest.TestCase):
 
 
 class FrameTests(unittest.TestCase):
-    def test_cube_culls_back_faces_and_sorts_in_camera_depth(self):
+    def test_cube_culls_back_faces_and_keeps_camera_depth(self):
         mesh = Mesh.from_obj(ROOT / 'objects/cube.obj')
         frame = prepare_frame(mesh, Camera(yaw=0, pitch=0), 800, 600)
         self.assertEqual(len(frame.points), 2)
-        self.assertTrue(np.all(np.diff(frame.depths) <= 0))
+        np.testing.assert_allclose(frame.depths, (1 / frame.inverse_depths).mean(axis=1))
         self.assertTrue(np.all((frame.shades >= 0.24) & (frame.shades <= 1)))
 
-    def test_depth_sort_uses_camera_space_after_orbit(self):
+    def test_depth_data_uses_camera_space_after_orbit(self):
         mesh = Mesh.from_obj(ROOT / 'objects/cube.obj')
         camera = Camera(yaw=1.2, pitch=0.4)
         frame = prepare_frame(mesh, camera, 800, 600)
         self.assertEqual(len(frame.points), 6)
-        self.assertTrue(np.all(np.diff(frame.depths) <= 0))
+        np.testing.assert_allclose(frame.depths, (1 / frame.inverse_depths).mean(axis=1))
         self.assertTrue(np.isfinite(frame.points).all())
+
+    def test_lighting_follows_camera_on_opposite_sides(self):
+        mesh = Mesh.from_obj(ROOT / 'objects/cube.obj')
+        front = prepare_frame(mesh, Camera(yaw=0, pitch=0), 800, 600)
+        back = prepare_frame(mesh, Camera(yaw=np.pi, pitch=0), 800, 600)
+        self.assertAlmostEqual(float(front.colors.mean()), float(back.colors.mean()), places=8)
+
+    def test_corner_normals_keep_cube_creases(self):
+        mesh = Mesh.from_obj(ROOT / 'objects/cube.obj')
+        for face, corners in zip(mesh.face_normals, mesh.corner_normals):
+            np.testing.assert_allclose(corners, np.tile(face, (3, 1)), atol=1e-12)
+
+    def test_clip_interpolates_vertex_colors(self):
+        polygon = clip_polygon([[0, 0, 0, 0, 0, 0], [1, 0, 1, 100, 100, 100],
+                                [0, 1, 1, 100, 100, 100]], [[0, 0, 1, -0.5]])
+        crossings = polygon[np.isclose(polygon[:, 2], 0.5)]
+        self.assertEqual(len(crossings), 2)
+        np.testing.assert_allclose(crossings[:, 3:], 50)
 
     def test_zero_area_faces_and_empty_visible_set_are_safe(self):
         mesh = Mesh(np.array([[0, 0, 0], [0, 0, 0], [0, 0, 0]], dtype=float),

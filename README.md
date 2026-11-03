@@ -1,13 +1,14 @@
 # Python 3D engine
 
-A small software renderer for OBJ meshes. NumPy handles transforms and projection;
-Pygame draws flat-shaded triangles. Drag to orbit and scroll to zoom.
+A software renderer for OBJ meshes, with smooth lighting and a per-pixel depth
+buffer. Drag to orbit and scroll to zoom.
 
 ![Mesh viewer](docs/preview.png)
 
 ## Run
 
-Requires Python 3.10+.
+Requires Python 3.10+. The first launch compiles the rasterizer with Numba and can
+take a few seconds; subsequent launches reuse the compiled code.
 
 ```sh
 python -m venv .venv
@@ -25,33 +26,46 @@ relative to the application. `main2.py` opens the same viewer.
 | Drag | Orbit the camera |
 | Scroll | Zoom |
 | Space / Pause | Pause rotation |
-| W / Display button | Shaded, edges, or wireframe |
+| W / Display button | Smooth, flat, edges, or wireframe |
 | M / Filename button | Next bundled mesh |
 | R / Reset | Fit the model and reset the camera |
+| Q / Quality button | Standard or High antialiasing |
 | Esc | Quit |
 
 ## Rendering
 
-`engine.py` loads OBJ files, transforms vertices in batches, culls back faces,
-clips against all six frustum planes, and applies perspective projection. It
-sorts visible triangles once per frame using camera-space depth. `main.py` handles
-input, lighting colors, and drawing, with 2x supersampling for smoother edges.
+`engine.py` transforms vertices in batches, culls back faces, clips geometry and
+vertex colors against all six frustum planes, and applies perspective projection.
+`rasterizer.py` uses compiled CPU loops to resolve depth per pixel and interpolate
+colors with perspective correction. Intersecting triangles no longer depend on
+draw order. Equal-depth surfaces can still exhibit ordinary Z-fighting.
+
+Smooth normals preserve sharp creases. A camera-relative key and fill light keep
+the visible side lit while orbiting. Lighting includes a subtle specular highlight.
+Flat mode keeps the original faceted appearance; wireframe shows all edges.
+
+Standard quality uses native resolution with a silhouette edge filter. High uses
+2x supersampling. Buffers and mesh normals are reused, and stationary views reuse
+the completed frame. `main.py` handles input and the Pygame window.
 
 The OBJ loader supports vertex positions, slash-separated and negative indices,
 and fan triangulation of convex polygons. Meshes are centered and scaled to fit.
 Textures, materials, and imported vertex normals are not used. Concave polygons
 should be triangulated before export.
 
-Depth uses the painter's algorithm rather than a Z-buffer: intersecting triangles
-and cyclic overlap can be drawn in the wrong order. Lighting is flat and
-directional, with an ambient term; there are no shadows or reflections.
+The original head has only 100 vertices and 196 triangles. Smooth shading improves
+its surface appearance; finer facial features require a more detailed OBJ mesh.
+There are no textures, transparency, or cast shadows.
 
 ## Tests and preview
 
 ```sh
 python -m unittest discover -s tests -v
 python main.py --screenshot docs/preview.png
+python scripts/benchmark.py
 ```
 
-Tests cover camera transforms, projection, clipping, OBJ parsing, and headless
-interaction. The screenshot command saves a PNG without opening a window.
+Tests cover camera transforms, clipping, OBJ parsing, perspective interpolation,
+crossing-triangle visibility in either draw order, and headless interaction.
+The screenshot command saves a PNG without opening a window. Benchmarks exclude
+compilation and measure warm render time without the display's refresh-rate cap.
